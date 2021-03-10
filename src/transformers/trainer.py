@@ -789,6 +789,7 @@ class Trainer:
         self,
         resume_from_checkpoint: Optional[Union[str, bool]] = None,
         trial: Union["optuna.Trial", Dict[str, Any]] = None,
+        skip_model_loading: Optional[Union[bool]] = True,
         **kwargs,
     ):
         """
@@ -802,6 +803,8 @@ class Trainer:
                 training will resume from the model/optimizer/scheduler states loaded here.
             trial (:obj:`optuna.Trial` or :obj:`Dict[str, Any]`, `optional`):
                 The trial run or the hyperparameter dictionary for hyperparameter search.
+            skip_model_loading (:obj:`bool`, `optional`, defaults to `True`):
+                If the model loading step is to be skipped since it is done elsewhere by the caller
             kwargs:
                 Additional keyword arguments used to hide deprecated arguments
         """
@@ -839,14 +842,15 @@ class Trainer:
             if resume_from_checkpoint is None:
                 raise ValueError(f"No valid checkpoint found in output directory ({self.args.output_dir})")
 
-        if resume_from_checkpoint is not None and os.path.isfile(os.path.join(resume_from_checkpoint, WEIGHTS_NAME)):
-            logger.info(f"Loading model from {resume_from_checkpoint}).")
-            if isinstance(self.model, PreTrainedModel):
-                self.model = self.model.from_pretrained(resume_from_checkpoint)
-                model_reloaded = True
-            else:
-                state_dict = torch.load(os.path.join(resume_from_checkpoint, WEIGHTS_NAME))
-                self.model.load_state_dict(state_dict)
+        if not skip_model_loading:
+            if resume_from_checkpoint is not None and os.path.isfile(os.path.join(resume_from_checkpoint, WEIGHTS_NAME)):
+                logger.info(f"Loading model from {resume_from_checkpoint}).")
+                if isinstance(self.model, PreTrainedModel):
+                    self.model = self.model.from_pretrained(resume_from_checkpoint)
+                    model_reloaded = True
+                else:
+                    state_dict = torch.load(os.path.join(resume_from_checkpoint, WEIGHTS_NAME))
+                    self.model.load_state_dict(state_dict)
 
         # If model was re-initialized, put it on the right device and update self.model_wrapped
         if model_reloaded:
