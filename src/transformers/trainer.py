@@ -789,7 +789,7 @@ class Trainer:
         self,
         resume_from_checkpoint: Optional[Union[str, bool]] = None,
         trial: Union["optuna.Trial", Dict[str, Any]] = None,
-        skip_model_loading: Optional[Union[bool]] = True,
+        skip_model_loading: Optional[Union[bool]] = False,
         **kwargs,
     ):
         """

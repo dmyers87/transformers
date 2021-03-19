@@ -20,9 +20,9 @@ from typing import Callable, Iterable, List
 
 import numpy as np
 import torch
+import itertools
 
 from .file_utils import add_start_docstrings
-
 
 LOGITS_PROCESSOR_INPUTS_DOCSTRING = r"""
     Args:
@@ -254,7 +254,7 @@ def _get_generated_ngrams(banned_ngrams, prev_input_ids, ngram_size, cur_len):
 
 
 def _calc_banned_ngram_tokens(
-    ngram_size: int, prev_input_ids: torch.Tensor, num_hypos: int, cur_len: int
+        ngram_size: int, prev_input_ids: torch.Tensor, num_hypos: int, cur_len: int
 ) -> List[Iterable[int]]:
     """Copied from fairseq for no_repeat_ngram in beam_search"""
     if cur_len + 1 < ngram_size:
@@ -357,8 +357,8 @@ class NoBadWordsLogitsProcessor(LogitsProcessor):
         if any(not isinstance(bad_word_ids, list) for bad_word_ids in bad_words_ids):
             raise ValueError(f"`bad_words_ids` has to be a list of lists, but is {bad_words_ids}.")
         if any(
-            any((not isinstance(token_id, (int, np.integer)) or token_id < 0) for token_id in bad_word_ids)
-            for bad_word_ids in bad_words_ids
+                any((not isinstance(token_id, (int, np.integer)) or token_id < 0) for token_id in bad_word_ids)
+                for bad_word_ids in bad_words_ids
         ):
             raise ValueError(
                 f"Each list in `bad_words_ids` has to be a list of positive integers, but is {bad_words_ids}."
@@ -384,7 +384,7 @@ class NoBadWordsLogitsProcessor(LogitsProcessor):
         elif len(tokens) > len(prev_tokens):
             # if bad word tokens are longer then prev input_ids they can't be equal
             return False
-        elif prev_tokens[-len(tokens) :].tolist() == tokens:
+        elif prev_tokens[-len(tokens):].tolist() == tokens:
             # if tokens match
             return True
         else:
@@ -494,11 +494,11 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
         self._num_sub_beams = num_beams // num_beam_groups
 
     def __call__(
-        self,
-        input_ids: torch.LongTensor,
-        scores: torch.FloatTensor,
-        current_tokens: torch.LongTensor,
-        beam_group_idx: int,
+            self,
+            input_ids: torch.LongTensor,
+            scores: torch.FloatTensor,
+            current_tokens: torch.LongTensor,
+            beam_group_idx: int,
     ) -> torch.FloatTensor:
         # hamming diversity: penalise using same token in current group which was used in previous groups at
         # the same time step
@@ -514,10 +514,10 @@ class HammingDiversityLogitsProcessor(LogitsProcessor):
         for batch_idx in range(batch_size):
             # predicted tokens of last time step of previous groups
             previous_group_tokens = current_tokens[
-                batch_idx * self._num_beams : batch_idx * self._num_beams + group_start_idx
-            ]
+                                    batch_idx * self._num_beams: batch_idx * self._num_beams + group_start_idx
+                                    ]
             token_frequency = torch.bincount(previous_group_tokens, minlength=vocab_size).to(scores.device)
-            scores[batch_idx * group_size : (batch_idx + 1) * group_size] -= self._diversity_penalty * token_frequency
+            scores[batch_idx * group_size: (batch_idx + 1) * group_size] -= self._diversity_penalty * token_frequency
 
         return scores
 
@@ -566,3 +566,56 @@ class ForcedEOSTokenLogitsProcessor(LogitsProcessor):
             scores[:, [i for i in range(num_tokens) if i != self.eos_token_id]] = -float("inf")
             scores[:, self.eos_token_id] = 0
         return scores
+
+
+class ConstrainedDecodingLogitsProcessor(LogitsProcessor):
+    r"""
+    :class:`transformers.LogitsProcessor` enforcing arbitrary constraints during decoding. This is a more
+        general version of the ConstrainedPrefixLogitsProcessor that doesn't necessarily enforce a 0/1 constraint
+        on the output space
+
+    Args:
+        tokenizer (:obj:`AutoTokenizer`):
+            The tokenizer compatible with the model. Used for understanding the input to the decoder
+        generate_precondition: (:obj:`Callable[List[string], List[Object]]`):
+            Function that takes as argument the batch of decoder inputs and returns a list of pre-conditions,
+            each corresponding to a batch item. The pre-condition could be any object, but would ideally be
+            an enumeration.
+        generate_constraints: (:obj:`Callable[List[Object], List[Object]]`):
+            Function that takes as argument the batch of pre-conditions and returns the constraints to be applied.
+            The constraints could be any object, but would ideally be a list of enumerations, corresponding to the
+            sequence of constraints to be applied.
+        generate_mask: (:obj:`Callable[List[Object], List[Object]]`):
+            Function that takes as argument the constraints corresponding to each element of the batch and constructs
+            a mask that executes those constraints
+    """
+
+    def __init__(self, tokenizer, generate_precondition: Callable,
+                 generate_constraints: Callable, generate_mask: Callable, **kwargs):
+        self._tokenizer = tokenizer
+        self._generate_precondition = generate_precondition
+        self._generate_constraints = generate_constraints
+        self._generate_mask = generate_mask
+        self._batch_text = None
+        self._beam_size = None
+        self._kwargs = kwargs
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        input_texts = self._tokenizer.batch_decode(input_ids, skip_special_tokens=True,
+                                                   clean_up_tokenization_spaces=True)
+        pre_conditions = self._generate_precondition(self._batch_text, input_texts, self._kwargs)
+        constraints = self._generate_constraints(pre_conditions, self._batch_text, input_texts, self._kwargs)
+        additive_mask, multiplicative_mask = self._generate_mask(scores, constraints)
+        scores = multiplicative_mask * scores + additive_mask
+        return scores
+
+    def set_batch_text(self, input_ids):
+        if self._beam_size is None:
+            raise RuntimeError('Set the beam size before setting batch text')
+        _batch_text = self._tokenizer.batch_decode(input_ids, skip_special_tokens=True,
+                                                   clean_up_tokenization_spaces=True)
+        self._batch_text = list(
+            itertools.chain.from_iterable(itertools.repeat(text, self._beam_size) for text in _batch_text))
+
+    def set_beam_size(self, beam_size):
+        self._beam_size = beam_size

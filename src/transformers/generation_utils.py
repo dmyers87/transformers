@@ -36,6 +36,8 @@ from .generation_logits_process import (
     TemperatureLogitsWarper,
     TopKLogitsWarper,
     TopPLogitsWarper,
+    LogitsProcessor,
+    ConstrainedDecodingLogitsProcessor,
 )
 from .utils import logging
 
@@ -653,6 +655,13 @@ class GenerationMixin:
         use_cache: Optional[bool] = None,
         num_beam_groups: Optional[int] = None,
         diversity_penalty: Optional[float] = None,
+        # `prefix_allowed_tokens_fn` can be improved on 2 aspects
+        # 1. It is useful only for scenarios where the result of applying constraints is zero-ing of logits.
+        #   We can make this more flexible by specifying a better masking strategy. For this, we can take as arg
+        #   the LogitsProcessor instance itself that is customized as per the requirement
+        # 2. The function supplied is expected to already have knowledge of the batch of input. It takes as input
+        #   the index in the batch and performs an op using that. This can be abstracted away from the API user and done
+        #   under the hoods
         prefix_allowed_tokens_fn: Optional[Callable[[int, torch.Tensor], List[int]]] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -661,6 +670,7 @@ class GenerationMixin:
         forced_bos_token_id: Optional[int] = None,
         forced_eos_token_id: Optional[int] = None,
         disable_length_normalization: Optional[bool] = None,
+        custom_logits_processors: Optional[List[LogitsProcessor]] = None,
         **model_kwargs,
     ) -> Union[GreedySearchOutput, SampleOutput, BeamSearchOutput, BeamSampleOutput, torch.LongTensor]:
         r"""
@@ -762,6 +772,8 @@ class GenerationMixin:
                 The id of the token to force as the last generated token when :obj:`max_length` is reached.
             disable_length_normalization (:obj:`bool`, `optional`, defaults to `False`):
                 Whether or not the default length normalization during decoding should be disabled
+            custom_logits_processors (:obj:`List[LogitsProcessor]`, `optional`, defaults to `None`)
+                A list of logits processors to perform custom logic during generation
 
             model_kwargs:
                 Additional model specific kwargs will be forwarded to the :obj:`forward` function of the model. If the
@@ -866,6 +878,7 @@ class GenerationMixin:
         return_dict_in_generate = (
             return_dict_in_generate if return_dict_in_generate is not None else self.config.return_dict_in_generate
         )
+        custom_logits_processors = custom_logits_processors if custom_logits_processors is not None else []
 
         model_kwargs["output_attentions"] = output_attentions
         model_kwargs["output_hidden_states"] = output_hidden_states
@@ -943,6 +956,13 @@ class GenerationMixin:
             num_beam_groups=num_beam_groups,
             diversity_penalty=diversity_penalty,
         )
+        # Provide the custom processors the batch of text as context info
+        for custom_processor in custom_logits_processors:
+            if isinstance(custom_processor, ConstrainedDecodingLogitsProcessor):
+                custom_processor.set_beam_size(num_beams)
+                custom_processor.set_batch_text(encoder_input_ids)
+
+        logits_processor.extend(custom_logits_processors)
 
         if is_greedy_gen_mode:
             if num_return_sequences > 1:
