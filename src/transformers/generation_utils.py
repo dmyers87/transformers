@@ -979,6 +979,7 @@ class GenerationMixin:
                 eos_token_id=eos_token_id,
                 output_scores=output_scores,
                 return_dict_in_generate=return_dict_in_generate,
+                callback_handle=model_kwargs.get("decoder_callback_beam_scores"),
                 **model_kwargs,
             )
 
@@ -1136,6 +1137,7 @@ class GenerationMixin:
         output_hidden_states: Optional[bool] = None,
         output_scores: Optional[bool] = None,
         return_dict_in_generate: Optional[bool] = None,
+        callback_handle: Optional = None,
         **model_kwargs,
     ) -> Union[GreedySearchOutput, torch.LongTensor]:
         r"""
@@ -1240,6 +1242,7 @@ class GenerationMixin:
         sequence_lengths, unfinished_sequences, cur_len = self._init_sequence_length_for_generation(
             input_ids, max_length
         )
+        generation_score = torch.zeros(input_ids.shape[0], dtype=torch.float, device=input_ids.device)
 
         while cur_len < max_length:
             # prepare model inputs
@@ -1273,10 +1276,15 @@ class GenerationMixin:
                     )
 
             # pre-process distribution
-            next_tokens_scores = logits_processor(input_ids, next_token_logits)
+            next_tokens_scores = F.log_softmax(next_token_logits, dim=-1)
+            next_tokens_scores = logits_processor(input_ids, next_tokens_scores)
+            next_tokens_scores = next_tokens_scores + generation_score[:, None].expand_as(next_tokens_scores)
 
             # argmax
-            next_tokens = torch.argmax(next_tokens_scores, dim=-1)
+            next_tokens_scores, next_tokens = torch.topk(next_tokens_scores, 1, dim=-1, largest=True, sorted=True)
+            next_tokens_scores = next_tokens_scores.squeeze(dim=-1)
+            next_tokens = next_tokens.squeeze(dim=-1)
+            generation_score = next_tokens_scores
 
             # add code that transfomers next_tokens to tokens_to_add
             if eos_token_id is not None:
@@ -1304,6 +1312,16 @@ class GenerationMixin:
             # increase cur_len
             cur_len = cur_len + 1
 
+        if callback_handle:
+            # Formatting it the same way as beam_hyp for consistency
+            callback_input = list()
+            for score, ids in zip(generation_score, input_ids):
+                callback_input.append([(
+                    score.item(),
+                    ids.clone(),
+                )])
+            for idx, callback_input_instance in enumerate(callback_input):
+                callback_handle(callback_input_instance, idx, **model_kwargs)
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
                 return GreedySearchEncoderDecoderOutput(
