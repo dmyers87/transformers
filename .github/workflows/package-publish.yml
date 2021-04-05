@@ -1,0 +1,67 @@
+name: Publish
+
+on:
+  pull_request:
+    branches:
+      - master
+env:
+  GKE_ZONE: us-east4
+jobs:
+  setup-build-publish:
+    name: Setup, Build, Publish
+    runs-on: [self-hosted, low2c8gi]
+
+    steps:
+      - name: get ENV shortname
+        run: |
+          if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
+            branch=${GITHUB_BASE_REF}
+          elif [[ "${{ github.event_name }}" == 'push' ]]; then
+            branch=${GITHUB_REF##*/}
+          else
+            echo "Incorrect event type: ${{ github.event_name }}"
+            exit 1
+          fi
+
+          case $branch in
+            main)
+              echo "dev is for main"
+              echo "ENV_SHORT=dev" >> $GITHUB_ENV
+              echo "ENV_SECRET=DEV_GKE_SA_KEY" >> $GITHUB_ENV
+              ;;
+          esac
+          echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c1-7`" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.6
+
+      - uses: google-github-actions/setup-gcloud@v0.2.1
+        with:
+          service_account_key: ${{ secrets[env.ENV_SECRET] }}
+          project_id: elementalcognition-app-${{ env.ENV_SHORT }}
+
+      - name: Auth Docker
+        run: |-
+          gcloud --quiet auth configure-docker
+
+      - name: Get GKE credentials
+        run: |-
+          gcloud container clusters get-credentials gke-ec-${{ env.ENV_SHORT }}-1 --zone "$GKE_ZONE"
+
+      - name: Install
+        run: |-
+          pip install setuptools wheel twine
+          pip install -e .
+
+      - name: Build
+        run: |-
+          python setup.py sdist bdist_wheel
+
+      - name: Publish
+        run: |-
+          twine upload dist/* -r transformers --repository-url=https://nexus.src.elementalcognition.com/service/rest/repository/pypi-all/ -p anonymous -u anonymous
