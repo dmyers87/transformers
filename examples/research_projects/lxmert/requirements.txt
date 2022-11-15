@@ -56,7 +56,7 @@ parso==0.7.1
 pep517==0.8.2
 pexpect==4.8.0
 pickleshare==0.7.5
-Pillow==7.2.0
+Pillow==9.2.0
 progress==1.5
 prometheus-client==0.8.0
 prompt-toolkit==3.0.7
@@ -90,9 +90,10 @@ tornado==6.0.4
 tqdm==4.48.2
 traitlets
 git+https://github.com/huggingface/transformers.git
-urllib3==1.25.8
+urllib3==1.26.5
 wcwidth==0.2.5
 webencodings==0.5.1
 wget==3.2
 widgetsnbextension==3.5.1
 xxhash==2.0.0
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
